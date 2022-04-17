@@ -7,5 +7,6 @@
 
 int chainload_image(void *base, size_t size, char **vars, size_t var_cnt);
 int chainload_load(const char *spec, char **vars, size_t var_cnt);
+int chainload_boot(char **vars, size_t var_cnt);
 
 #endif

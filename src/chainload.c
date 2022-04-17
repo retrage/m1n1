@@ -14,6 +14,7 @@
 
 #ifdef CHAINLOADING
 int rust_load_image(const char *spec, void **image, size_t *size);
+int rust_boot_image(void **image, size_t *size);
 #endif
 
 extern u8 _chainload_stub_start[];
@@ -133,6 +134,24 @@ int chainload_load(const char *spec, char **vars, size_t var_cnt)
     return chainload_image(image, size, vars, var_cnt);
 }
 
+int chainload_boot(char **vars, size_t var_cnt)
+{
+    void *image;
+    size_t size;
+    int ret;
+
+    if (!nvme_init()) {
+        printf("chainload: NVME init failed\n");
+        return -1;
+    }
+
+    ret = rust_boot_image(&image, &size);
+    nvme_shutdown();
+
+    // Return if boot failed.
+    return -1;
+}
+
 #else
 
 int chainload_load(const char *spec, char **vars, size_t var_cnt)
@@ -142,6 +161,15 @@ int chainload_load(const char *spec, char **vars, size_t var_cnt)
     UNUSED(var_cnt);
 
     printf("Chainloading files not supported in this build!\n");
+    return -1;
+}
+
+int chainload_boot(char **vars, size_t var_cnt)
+{
+    UNUSED(vars);
+    UNUSED(var_cnt);
+
+    printf("Chainload boot is not supported in this build!\n");
     return -1;
 }
 

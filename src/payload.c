@@ -253,6 +253,10 @@ int payload_run(void)
         return chainload_load(chainload_spec, chosen, chosen_cnt);
     }
 
+    if (chosen_cnt > 0) {
+      return chainload_boot(chosen, chosen_cnt);
+    }
+
     if (kernel && fdt) {
         smp_start_secondaries();
 

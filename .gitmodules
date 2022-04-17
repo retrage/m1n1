@@ -25,3 +25,6 @@
 [submodule "rust/vendor/memchr"]
 	path = rust/vendor/memchr
 	url = https://github.com/BurntSushi/memchr
+[submodule "rust-hypervisor-firmware"]
+	path = rust-hypervisor-firmware
+	url = git@github.com:retrage/rust-hypervisor-firmware.git
