@@ -43,14 +43,12 @@ endif
 
 # Required for no_std + alloc for now
 export RUSTUP_TOOLCHAIN=nightly
-RUST_LIB := librust.a
-RHF_LIB := libhypervisor_fw.a
+RUST_LIB := libhypervisor_fw.a
 RUST_LIBS :=
-RUST_ROOT := rust
-RHF_ROOT := rust-hypervisor-firmware
+RUST_ROOT := rust-hypervisor-firmware
 ifeq ($(CHAINLOADING),1)
 CFG += CHAINLOADING
-RUST_LIBS += $(RUST_LIB) $(RHF_LIB)
+RUST_LIBS += $(RUST_LIB)
 endif
 
 LDFLAGS := -EL -maarch64elf --no-undefined -X -Bsymbolic \
@@ -145,13 +143,6 @@ build/$(RUST_LIB): $(RUST_ROOT)/src/* $(RUST_ROOT)/*
 	@mkdir -p "$(dir $@)"
 	@cargo build --target $(RUSTARCH) --lib --release --manifest-path $(RUST_ROOT)/Cargo.toml --target-dir build
 	@cp "build/$(RUSTARCH)/release/${RUST_LIB}" "$@"
-
-build/$(RHF_LIB): $(RHF_ROOT)/src/* $(RHF_ROOT)/*
-	@echo "  RS    $@"
-	@mkdir -p $(DEPDIR)
-	@mkdir -p "$(dir $@)"
-	@cargo build --target $(RUSTARCH) --lib --release --manifest-path $(RHF_ROOT)/Cargo.toml --target-dir build
-	@cp "build/$(RUSTARCH)/release/${RHF_LIB}" "$@"
 
 build/%.o: src/%.S
 	@echo "  AS    $@"

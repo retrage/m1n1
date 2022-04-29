@@ -249,9 +249,11 @@ int payload_run(void)
     while (p)
         p = load_one_payload(p, 0);
 
+#if 0
     if (chainload_spec) {
         return chainload_load(chainload_spec, chosen, chosen_cnt);
     }
+#endif
 
     if (chosen_cnt > 0) {
       return chainload_boot(chosen, chosen_cnt);
