@@ -134,6 +134,7 @@ SECTIONS {
         . = ALIGN(0x4000);
     } :text
     _text_size = . - _text_start;
+    _text_end = .;
     .rodata : ALIGN(0x4000) {
         *(.rodata)
         *(.rodata.*)

@@ -137,7 +137,7 @@ rustfmt:
 rustfmt-check:
 	cd $(RUST_ROOT) && cargo fmt --check
 
-build/$(RUST_LIB): $(RUST_ROOT)/src/* $(RUST_ROOT)/*
+build/$(RUST_LIB): $(RUST_ROOT)/src/efi/* $(RUST_ROOT)/src/* $(RUST_ROOT)/*
 	@echo "  RS    $@"
 	@mkdir -p $(DEPDIR)
 	@mkdir -p "$(dir $@)"
