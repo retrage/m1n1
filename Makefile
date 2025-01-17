@@ -20,7 +20,7 @@ endif
 ifeq ($(USE_CLANG),1)
 CC := $(TOOLCHAIN)clang --target=$(ARCH)
 AS := $(TOOLCHAIN)clang --target=$(ARCH)
-LD := $(TOOLCHAIN)ld.lld
+LD := /opt/homebrew/opt/lld/bin/ld.lld
 OBJCOPY := $(TOOLCHAIN)llvm-objcopy
 CLANG_FORMAT ?= $(TOOLCHAIN)clang-format
 EXTRA_CFLAGS ?=
