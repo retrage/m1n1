@@ -9,6 +9,7 @@
 #include "uart.h"
 #include "uartproxy.h"
 
+#define DEBUG_PMU_IRQ
 #define TIME_ACCOUNTING
 
 extern spinlock_t bhl;

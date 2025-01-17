@@ -6,6 +6,8 @@
 #include "memory.h"
 #include "string.h"
 
+#define DEBUG_IODEV
+
 #ifdef DEBUG_IODEV
 #define dprintf printf
 #else
