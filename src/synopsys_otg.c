@@ -19,7 +19,123 @@
 // limitations under the License.
 //
 
-#include <pongo.h>
+#include <stdint.h>
+#include "adt.h"
+#include "malloc.h"
+#include "types.h"
+#include "pongo_usb.h"
+#include "string.h"
+#include "utils.h"
+
+#ifndef PAGE_SIZE
+#define PAGE_SIZE       get_page_size()
+#endif
+
+static uint64_t gIOBase;
+static char *gDevType;
+static char soc_name[9] = {};
+static uint32_t socnum = 0x0;
+
+static uint64_t dis_int_count = 1;
+
+static void enable_interrupts(void) {
+    if (!dis_int_count) panic("irq over-enable");
+    dis_int_count--;
+    if (!dis_int_count) {
+        sysop("msr daifclr, #0xf");
+        sysop("isb");
+    }
+}
+
+static void disable_interrupts(void) {
+    sysop("msr daifset, #0xf");
+    sysop("isb");
+    dis_int_count++;
+    if (!dis_int_count) panic("irq over-disable");
+}
+
+uint32_t adt_get_prop_u32(const void *adt, int nodeoffset, const char *name) {
+    u32 len;
+    const void *p = adt_getprop(adt, nodeoffset, name, &len);
+    if (!p) return 0;
+    return *(const uint32_t *)p;
+}
+
+void pongo_entry_cached(void)
+{
+    int offset = adt_path_offset(adt, "/arm-io");
+
+    uint64_t *ranges = (uint64_t *)adt_getprop(adt, offset, "ranges", NULL);
+    gIOBase = ranges[1];
+
+    gDevType = (char *)adt_getprop(adt, offset, "device_type", NULL);
+    size_t len = strlen(gDevType) - 3;
+    len = len < 8 ? len : 8;
+    strncpy(soc_name, gDevType, len);
+    if  (strcmp(soc_name, "s5l8960x") == 0) socnum = 0x8960;
+    else if(strcmp(soc_name, "t7000") == 0) socnum = 0x7000;
+    else if(strcmp(soc_name, "t7001") == 0) socnum = 0x7001;
+    else if(strcmp(soc_name, "s8001") == 0) socnum = 0x8001;
+    else if(strcmp(soc_name, "t8010") == 0) socnum = 0x8010;
+    else if(strcmp(soc_name, "t8011") == 0) socnum = 0x8011;
+    else if(strcmp(soc_name, "t8012") == 0) socnum = 0x8012;
+    else if(strcmp(soc_name, "t8015") == 0) socnum = 0x8015;
+    else if(strcmp(soc_name, "s8000") == 0)
+    {
+        int sgx_offset = adt_path_offset(adt, "/arm-io/sgx");
+        const char *sgx = adt_getprop(adt, sgx_offset, "compatible", NULL);
+        if(strlen(sgx) > 4 && strcmp(sgx + 4, "s8003") == 0)
+        {
+            socnum = 0x8003;
+            soc_name[4] = '3';
+        }
+        else
+        {
+            socnum = 0x8000;
+        }
+    }
+}
+
+static void clock_gate(uint64_t addr, char val)
+{
+    if (val) {
+        *(volatile uint32_t*)(addr) |= 0xF;
+    } else {
+        *(volatile uint32_t*)(addr) &= ~0xF;
+    }
+
+    while (1) {
+        uint32_t x = *(volatile uint32_t*)(addr);
+        if((x & 0xf) == ((x >> 4) & 0xf)) break;
+    }
+}
+
+static void cache_invalidate(void *address, size_t size) {
+    uint64_t cache_line_size = 64;
+    uint64_t start = ((uintptr_t) address) & ~(cache_line_size - 1);
+    uint64_t end = ((uintptr_t) address + size + cache_line_size - 1) & ~(cache_line_size - 1);
+    asm volatile("isb");
+    asm volatile("dsb sy");
+    for (uint64_t addr = start; addr < end; addr += cache_line_size) {
+        asm volatile("dc ivac, %0" : : "r"(addr));
+    }
+    asm volatile("dsb sy");
+    asm volatile("isb");
+}
+
+static void cache_clean_and_invalidate(void *address, size_t size) {
+    uint64_t cache_line_size = 64;
+    uint64_t start = ((uintptr_t) address) & ~(cache_line_size - 1);
+    uint64_t end = ((uintptr_t) address + size + cache_line_size - 1) & ~(cache_line_size - 1);
+    asm volatile("isb");
+    asm volatile("dsb sy");
+    for (uint64_t addr = start; addr < end; addr += cache_line_size) {
+        asm volatile("dc civac, %0" : : "r"(addr));
+    }
+    asm volatile("dsb sy");
+    asm volatile("isb");
+}
+
 uint64_t gSynopsysBase;
 uint64_t gSynopsysOTGBase;
 uint64_t gSynopsysComplexBase;
@@ -56,9 +172,9 @@ static void reg_or(struct _reg reg, uint32_t val) {
 }
 
 
-static void USB_DEBUG_PRINT_REGISTERS();
+static void USB_DEBUG_PRINT_REGISTERS(void);
 
-static void USB_DEBUG_PRINT_REGISTERS() {
+static void USB_DEBUG_PRINT_REGISTERS(void) {
     disable_interrupts();
 #define USB_DEBUG_REG_VALUE(reg) USB_DEBUG(USB_DEBUG_STANDARD, #reg " = 0x%x\n", reg_read(reg));
 	USB_DEBUG_REG_VALUE(rGOTGCTL);
@@ -120,13 +236,13 @@ static void USB_DEBUG_PRINT_REGISTERS() {
 	USB_DEBUG_REG_VALUE(rDTXFSTS(1));
     enable_interrupts();
 }
-struct task usb_task = {.name = "usb"};
+// TODO: struct task usb_task = {.name = "usb"};
 
 
 static const char *string_descriptors[] = {
 	[iManufacturer] = "checkra1n team",
 	[iProduct]      = "pongoOS USB Device",
-	[iSerialNumber] = ("pongoOS / checkra1n "PONGO_VERSION),
+	[iSerialNumber] = ("pongoOS / checkra1n "/*PONGO_VERSION*/),
 };
 
 static const uint32_t string_descriptor_count = sizeof(string_descriptors) / sizeof(string_descriptors[0]);
@@ -227,7 +343,7 @@ static uint8_t ktrw_recv_data[0x1000];
 static uint16_t ktrw_recv_count;
 
 static void
-ktrw_send_done() {
+ktrw_send_done(void) {
 	USB_DEBUG(USB_DEBUG_APP, "ktrw_send done");
 	if (ktrw_send_in_flight > ktrw_send_count) {
 		USB_DEBUG(USB_DEBUG_FATAL, "in_flight %u > %u send_count",
@@ -270,7 +386,164 @@ ktrw_recv(uint16_t wLength) {
 	return true;
 }
 
-extern bool ep0_device_request(struct setup_packet *setup);
+// extern bool ep0_device_request(struct setup_packet *setup);
+
+#define UPLOADSZ_MAX        (1024 * 1024 * 128)
+
+uint8_t * loader_xfer_recv_data;
+uint32_t loader_xfer_recv_count;
+uint32_t loader_xfer_recv_size;
+uint32_t loader_next_xfer_size;
+uint32_t loader_xfer_size;
+char usbloader_is_waiting_xfer;
+
+char cmd_buf[256];
+uint32_t cmd_len;
+char should_wait_for_cmd_handler = 0;
+
+#define STDOUT_BUFLEN 0x1000
+char stdoutbuf_copy[STDOUT_BUFLEN];
+
+volatile uint8_t command_in_progress = 0;
+
+void fetch_stdoutbuf(char* to, int* len) {
+    // TODO: lock_take(&stdout_lock);
+    // TODO: memcpy(to, stdout_buf, stdout_buf_len);
+    // TODO: *len = stdout_buf_len;
+    // TODO: stdout_buf_len = 0;
+    // TODO: lock_release(&stdout_lock);
+}
+
+void usb_read_stdout_cb(void) {}
+
+void usbloader_xfer_done_cb(void* data, uint32_t size, uint32_t transferred) {
+    if (!usbloader_is_waiting_xfer) return;
+    cache_invalidate(loader_xfer_recv_data, loader_xfer_recv_count);
+    loader_xfer_recv_count = transferred;
+    usbloader_is_waiting_xfer = 0;
+}
+
+bool usb_write_stdin(const void *data, uint32_t size) {
+    enable_interrupts();
+    const char* datac = (const char*) data;
+    for (size_t i=0; i<size; i++) {
+        if (!datac[i]) break;
+        // TODO: queue_rx_char(datac[i]);
+        printf("%c", datac[i]);
+    }
+    // TODO: if (should_wait_for_cmd_handler)
+    // TODO:     event_wait(&command_handler_iter);
+    disable_interrupts();
+    return true;
+}
+
+void resize_loader_xfer_data(uint32_t newsz) {
+    if (newsz > UPLOADSZ_MAX) panic("resize_loader_xfer_data");
+    disable_interrupts();
+    if (newsz > loader_xfer_recv_size) {
+        uint8_t *new_xfer_buffer = (uint8_t*)memalign(PAGE_SIZE, newsz);
+        memcpy(new_xfer_buffer, loader_xfer_recv_data, loader_xfer_recv_count);
+        free(loader_xfer_recv_data);
+        loader_xfer_recv_size = newsz;
+        loader_xfer_recv_data = new_xfer_buffer;
+    }
+    enable_interrupts();
+}
+
+bool reallocate_loader_xfer_data(const void* data, uint32_t size) {
+    if (size != 4) panic("reallocate_loader_xfer_data");
+    
+    uint32_t newsz = *(uint32_t*)data;
+    newsz += 0x1ff;
+    newsz &= ~0x1ff;
+    if (newsz > UPLOADSZ_MAX) return false;
+    loader_xfer_recv_count = 0;
+    usbloader_is_waiting_xfer = 1;
+    resize_loader_xfer_data(newsz);
+    loader_xfer_size = newsz;
+    usb_out_transfer_dma(2, loader_xfer_recv_data, (uint64_t)loader_xfer_recv_data, loader_xfer_size, usbloader_xfer_done_cb); // should resolve the VA rather than doing this, but oh well.
+
+    return true;
+}
+
+bool ep0_device_request(struct setup_packet *setup) {
+    printf("ep0_device_request\n");
+    if (setup->bmRequestType == 0x21) {
+        printf("ep0_device_request 0x21\n");
+        if (setup->bRequest == 1 && setup->wLength == 0) { // request bulk upload initialization
+            printf("ep0_device_request 0x21 1\n");
+            if (usbloader_is_waiting_xfer) return false;
+            loader_xfer_recv_count = 0;
+            usbloader_is_waiting_xfer = 1;
+            usb_out_transfer_dma(2, loader_xfer_recv_data, (uint64_t)loader_xfer_recv_data, loader_xfer_size, usbloader_xfer_done_cb); // should resolve the VA rather than doing this, but oh well.
+            return true;
+        }
+        if (setup->bRequest == 2 && setup->wLength == 0) { // discard loaded data
+            printf("ep0_device_request 0x21 2\n");
+            if (!usbloader_is_waiting_xfer)
+                loader_xfer_recv_count = 0;
+            return true;
+        }
+        if (setup->bRequest == 3 && setup->wLength > 0 && setup->wLength <= 512) { // write to stdin
+            printf("ep0_device_request 0x21 3\n");
+            ep0_begin_data_out_stage(usb_write_stdin);
+            return true;
+        }
+        if (setup->bRequest == 4) {
+            printf("ep0_device_request 0x21 4\n");
+            if(setup->wValue == 0) // make it so next write to stdin will stall until command is over
+            {
+                printf("ep0_device_request 0x21 4 0\n");
+                should_wait_for_cmd_handler = 1;
+                // TODO: set_stdout_blocking(false);
+                return true;
+            }
+            if(setup->wValue == 1) // make writes to stdout stall until async check-in
+            {
+                printf("ep0_device_request 0x21 4 1\n");
+                should_wait_for_cmd_handler = 0;
+                // TODO: set_stdout_blocking(true);
+                return true;
+            }
+            if(setup->wValue == 0xffff) // reset all
+            {
+                printf("ep0_device_request 0x21 4 0xffff\n");
+                should_wait_for_cmd_handler = 0;
+                // TODO: set_stdout_blocking(false);
+                return true;
+            }
+        }
+        if (setup->bRequest == 1 && setup->wLength == 4) { // request upload buffer size change
+            printf("ep0_device_request 0x21 1 4\n");
+            if (usbloader_is_waiting_xfer) return false;
+            ep0_begin_data_out_stage(reallocate_loader_xfer_data);
+            return true;
+        }
+    } else if (setup->bmRequestType == 0xA1) {
+        // IN request
+        printf("ep0_device_request 0xA1\n");
+        if (setup->bRequest == 1 && (setup->wLength == 512 || setup->wLength == 0x1000)) { // request bulk upload initialization
+            printf("ep0_device_request 0xA1 1\n");
+            int xferlen = 0;
+            char *buf = stdoutbuf_copy;
+            fetch_stdoutbuf(buf, &xferlen);
+            if(xferlen > setup->wLength)
+            {
+                buf += xferlen - setup->wLength;
+                xferlen = setup->wLength;
+            }
+            ep0_begin_data_in_stage(buf, xferlen, usb_read_stdout_cb);
+            return true;
+        }
+        if (setup->bRequest == 2 && setup->wLength == 1) { // check for async command completion status
+            printf("ep0_device_request 0xA1 2\n");
+            uint8_t inprog = command_in_progress;
+            ep0_begin_data_in_stage(&inprog, 1, usb_read_stdout_cb);
+            return true;
+        }
+    }
+    return false;
+}
 
 static bool
 ep0_vendor_request(struct setup_packet *setup) {
@@ -307,7 +580,7 @@ usb_write(const void *data, size_t size) {
 }
 
 void
-usb_write_commit() {
+usb_write_commit(void) {
 	if (ktrw_send_count > 0 && ktrw_send_in_flight == 0) {
 		ktrw_send_in_flight = ktrw_send_count;
 		USB_DEBUG(USB_DEBUG_APP, "ktrw_send(%.*s)", (int) ktrw_send_in_flight,
@@ -435,7 +708,7 @@ ep0_setup_stage(struct setup_packet *setup) {
 		case 0:		// Standard
 			rv = ep0_standard_request(setup);
 			break;
-    		case 0x20:	// Device
+    	case 0x20:	// Device
             rv = ep0_device_request(setup);
 			break;
 		case 0x40:	// Vendor
@@ -1171,7 +1444,7 @@ usb_set_address(uint8_t address) {
 	reg_write(rDCFG, dcfg);
 }
 __attribute__((used)) static void
-usb_reset() {
+usb_reset(void) {
     USB_DEBUG(USB_DEBUG_FUNC, "Reset");
     ep_in_abort(&ep0_in);
     ep_in_abort(&ep1_in);
@@ -1389,7 +1662,7 @@ usb_out_transfer_dma(uint8_t ep_addr, void *data, uint32_t dma, uint32_t size,
 
 
 static void
-ep0_in_interrupt() {
+ep0_in_interrupt(void) {
 	uint32_t diepint = reg_read(rDIEPINT(0));
 	reg_write(rDIEPINT(0), diepint);
 	USB_DEBUG(USB_DEBUG_INTR, "DIEPINT(0) %x", diepint);
@@ -1454,7 +1727,7 @@ ep0_in_interrupt() {
 }
 
 static void
-ep0_out_interrupt() {
+ep0_out_interrupt(void) {
 	uint32_t doepint = reg_read(rDOEPINT(0));
 	reg_write(rDOEPINT(0), doepint);
     bool is_setup = !!(doepint & 0x8008);
@@ -1462,7 +1735,7 @@ ep0_out_interrupt() {
 	if (is_setup) {
 		// We've received a setup packet.
 
-        spin(2); // this is required because this interrupt is asserted *before* the DMA transfer is complete on some devices.. ugh
+        udelay(2); // this is required because this interrupt is asserted *before* the DMA transfer is complete on some devices.. ugh
         struct setup_packet *setup = ep_out_recv_setup_done(&ep0_out);
         ep0.setup_packet = *setup;
 
@@ -1606,7 +1879,7 @@ ep0_out_interrupt() {
 }
 
 static void
-ep1_in_interrupt() {
+ep1_in_interrupt(void) {
 	uint32_t diepint = reg_read(rDIEPINT(1));
 	reg_write(rDIEPINT(1), diepint);
 	USB_DEBUG(USB_DEBUG_INTR, "DIEPINT(1) %x", diepint);
@@ -1636,7 +1909,7 @@ ep1_in_interrupt() {
 
 
 static void
-ep2_out_interrupt() {
+ep2_out_interrupt(void) {
     uint32_t doepint = reg_read(rDOEPINT(2));
     reg_write(rDOEPINT(2), doepint);
     USB_DEBUG(USB_DEBUG_INTR, "DOEPINT(2) %x", doepint);
@@ -1667,7 +1940,7 @@ ep2_out_interrupt() {
 }
 
 static void
-usb_ep_interrupt() {
+usb_ep_interrupt(void) {
 	uint32_t daint = reg_read(rDAINT);
 	if (daint != 0) {
 		USB_DEBUG(USB_DEBUG_INTR, "[%u] DAINT %x", USB_DEBUG_ITERATION, daint);
@@ -1690,7 +1963,7 @@ char usb_usbtask_handoff_mode;
 uint16_t usb_irq;
 struct task* usbtask_niq;
 
-void usb_handler() {
+void usb_handler(void) {
     uint32_t gintsts = 0;
     while (1) {
         gintsts |= reg_read(rGINTSTS);
@@ -1710,41 +1983,53 @@ void usb_handler() {
     }
 }
 
-void usb_main_nonirq() {
-    while (1) {
+void usb_main_nonirq(void) {
+    printf("usb_main_nonirq\n");
+    u64 timeout = timeout_calculate(30 * 1000 * 1000);
+    while (!timeout_expired(timeout)) {
         usb_handler();
         disable_interrupts();
-        if (usb_irq) unmask_interrupt(usb_irq);
-        task_unlink(task_current());
-        task_yield_asserted();
     }
+    printf("usb_main_nonirq done\n");
+    // while (1) {
+    //     usb_handler();
+    //     disable_interrupts();
+    //     // TODO: if (usb_irq) unmask_interrupt(usb_irq);
+    //     // TODO: task_unlink(task_current());
+    //     // TODO: task_yield_asserted();
+    // }
 }
 
 
-void usb_main() {
+void usb_main(void) {
     while (1) {
         if (usb_usbtask_handoff_mode && usb_irq_mode) {
-            if (usbtask_niq->flags & TASK_LINKED) panic("USB: spurious IRQ");
-            task_link(usbtask_niq);
-            task_current()->flags |= TASK_MASK_NEXT_IRQ;
+            // TODO: if (usbtask_niq->flags & TASK_LINKED) panic("USB: spurious IRQ");
+            // TODO: task_link(usbtask_niq);
+            // TODO: task_current()->flags |= TASK_MASK_NEXT_IRQ;
         } else {
             disable_interrupts();
             usb_handler();
             enable_interrupts();
         }
-	if (usb_irq_mode)
-        task_exit_irq();
-        else task_yield();
+	if (usb_irq_mode) {}
+        // TODO: task_exit_irq();
+        // TODO: else task_yield();
     }
 }
 
 static uint64_t reg1=0, reg2=0, reg3=0;
 
-void usb_bringup() {
+void usb_bringup(void) {
+    printf("usb_bringup\n");
+    int offset = adt_path_offset(adt, "/arm-io/otgphyctrl");
+    uint32_t cfg0_device = adt_get_prop_u32(adt, offset, "cfg0-device");
+    uint32_t cfg1_device = adt_get_prop_u32(adt, offset, "cfg1-device");
+
     clock_gate(reg1, 0);
     clock_gate(reg2, 0);
     clock_gate(reg3, 0);
-    spin(1000);
+    udelay(1000);
     clock_gate(reg1, 1);
     clock_gate(reg2, 1);
     clock_gate(reg3, 1);
@@ -1756,22 +2041,25 @@ void usb_bringup() {
         *(volatile uint32_t*)(gSynopsysComplexBase + 0x1c) = 0x108;
         *(volatile uint32_t*)(gSynopsysComplexBase + 0x5c) = 0x108;
     }
-    *(volatile uint32_t *)(gSynopsysOTGBase + 0x8) = dt_get_u32_prop("otgphyctrl", "cfg0-device");
-    *(volatile uint32_t *)(gSynopsysOTGBase + 0xc) = dt_get_u32_prop("otgphyctrl", "cfg1-device");
+    *(volatile uint32_t *)(gSynopsysOTGBase + 0x8) = cfg0_device;
+    *(volatile uint32_t *)(gSynopsysOTGBase + 0xc) = cfg1_device;
     *(volatile uint32_t*)(gSynopsysOTGBase) |= 1;
-    spin(20);
+    udelay(20);
     *(volatile uint32_t*)(gSynopsysOTGBase) &= 0xFFFFFFF3;
-    spin(20);
+    udelay(20);
     *(volatile uint32_t*)(gSynopsysOTGBase) &= 0xFFFFFFFE;
-    spin(20);
+    udelay(20);
     *(volatile uint32_t*)(gSynopsysOTGBase + 0x4) &= ~2;
-    spin(1500);
+    udelay(1500);
+    printf("usb_bringup done\n");
 }
 
-void usb_init() {
+void usbotg_init(void) {
+    printf("usbotg_init\n");
     gSynopsysOTGBase = 0;
     uint32_t sz = 0;
-    uint64_t *reg = dt_get_prop("otgphyctrl", "reg", &sz);
+    int otgphyctrl_offset = adt_path_offset(adt, "/arm-io/otgphyctrl");
+    uint64_t *reg = (uint64_t *)adt_getprop(adt, otgphyctrl_offset, "reg", &sz);
     if(reg)
     {
         sz /= 0x10;
@@ -1789,25 +2077,28 @@ void usb_init() {
         panic("Failed to find gSynopsysOTGBase");
     }
     gSynopsysOTGBase += gIOBase;
-    gSynopsysComplexBase = gIOBase + dt_get_u32_prop("usb-complex", "reg");
+    int usb_complex_offset = adt_path_offset(adt, "/arm-io/usb-complex");
+    gSynopsysComplexBase = gIOBase + adt_get_prop_u32(adt, usb_complex_offset, "reg");
     // Can't trust "usb-device" dtre entry, because that can be USB3 and we want USB2
     gSynopsysBase = (gSynopsysOTGBase & ~0xfffULL) + 0x00100000;
     uint32_t otg_irq;
 
-    struct usb_regs regs;
-    size_t plsz = sizeof(struct usb_regs);
-    if (!hal_get_platform_value("usb_regs", &regs, &plsz)) {
-        panic("synopsys_otg: need usb_regs platform value!");
-    }
+    // XXX: For Apple A11 (T8015)
+    struct usb_regs regs = {
+        .reg1 = 0x32080270,
+        .reg2 = 0x32080278,
+        .reg3 = 0x32080270,
+        .otg_irq = 324
+    };
 
     reg1 = gIOBase + regs.reg1;
     reg2 = gIOBase + regs.reg2;
     reg3 = gIOBase + regs.reg3;
     otg_irq = regs.otg_irq;
 
-    uint64_t dma_page_v = (uint64_t) alloc_contig(4 * DMA_BUFFER_SIZE);
-    uint64_t dma_page_p = vatophys_static((void*)dma_page_v);
-    bzero((void*)dma_page_v,4 * DMA_BUFFER_SIZE);
+    uint64_t dma_page_v = (uint64_t) memalign(PAGE_SIZE, 4 * DMA_BUFFER_SIZE);
+    uint64_t dma_page_p = dma_page_v;
+    memset((void*)dma_page_v, 0, 4 * DMA_BUFFER_SIZE);
     cache_clean_and_invalidate((void*)dma_page_v, 4 * DMA_BUFFER_SIZE);
 
     disable_interrupts();
@@ -1850,20 +2141,21 @@ void usb_init() {
     *(volatile uint32_t*)(gSynopsysOTGBase + 0x4) |= 2;
 
     if (usb_usbtask_handoff_mode) {
-        usbtask_niq = alloc_contig(sizeof(struct task));
-        strcpy(usbtask_niq->name, "usbtask");
-        task_register_unlinked(usbtask_niq, usb_main_nonirq);
+        // TODO: usbtask_niq = alloc_contig(sizeof(struct task));
+        // TODO: strcpy(usbtask_niq->name, "usbtask");
+        // TODO: task_register_unlinked(usbtask_niq, usb_main_nonirq);
     }
     usb_irq = 0;
     if (usb_irq_mode) {
         usb_irq = otg_irq;
-        task_register_preempt_irq(&usb_task, usb_main, usb_irq);
+        // TODO: task_register_preempt_irq(&usb_task, usb_main, usb_irq);
     }
-    else task_register(&usb_task, usb_main);
+    // TODO: else task_register(&usb_task, usb_main);
     enable_interrupts();
-    command_register("synopsys", "prints a synopsysotg register dump", USB_DEBUG_PRINT_REGISTERS);
+    // TODO: command_register("synopsys", "prints a synopsysotg register dump", USB_DEBUG_PRINT_REGISTERS);
+    printf("usbotg_init done\n");
 }
-void usb_teardown() {
+void usbotg_teardown(void) {
     if (!gSynopsysOTGBase) return;
     reg_write(rGAHBCFG, 0x2e);
     reg_or(rDCTL, 0x2);

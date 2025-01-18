@@ -25,11 +25,14 @@
  * 
  */
 #include <stdbool.h>
-#define USB_DEBUG_ITERATION 0
+
+#include "utils.h"
+
+#define USB_DEBUG_ITERATION 1
+#define USB_DEBUG_LEVEL 0
 #define USB_DEBUG_INCREMENT_ITERATION()			do { } while (0)
 #if defined(USB_DEBUG_LEVEL) && USB_DEBUG_LEVEL >= 1
-#   include <stdio.h>
-#   define USB_DEBUG(_type, fmt, ...)			do { fiprintf(stderr, fmt "\n", ##__VA_ARGS__); } while(0)
+#   define USB_DEBUG(_type, fmt, ...)			do { printf(fmt "\n", ##__VA_ARGS__); } while(0)
 #else
 #   define USB_DEBUG(_type, ...)				do { } while (0)
 #endif
@@ -125,8 +128,9 @@ enum {
 	iSerialNumber = 3,
 };
 
-extern void usb_init();
-extern void usb_teardown();
+extern void pongo_entry_cached(void);
+extern void usbotg_init(void);
+extern void usbotg_teardown(void);
 extern void ep0_begin_data_in_stage(const void *data, uint32_t size, void (*callback)(void));
 extern void ep0_begin_data_out_stage(bool (*callback)(const void *data, uint32_t size));
 extern size_t usb_read(void *data, size_t size);
@@ -134,3 +138,4 @@ extern size_t usb_write(const void *data, size_t size);
 extern void usb_in_transfer(uint8_t ep_addr, const void *data, uint32_t size, void (*callback)(void));
 extern void usb_out_transfer(uint8_t ep_addr, void *data, uint32_t size, void (*callback)(void *data, uint32_t size, uint32_t transferred));
 extern void usb_out_transfer_dma(uint8_t ep_addr, void *data, uint32_t dma, uint32_t size, void (*callback)(void *data, uint32_t size, uint32_t transferred));
+extern void usb_main_nonirq(void);
