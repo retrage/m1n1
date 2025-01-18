@@ -29,6 +29,7 @@
 #include "utils.h"
 #include "wdt.h"
 #include "xnuboot.h"
+#include "pongo_usb.h"
 
 struct vector_args next_stage;
 
@@ -131,12 +132,23 @@ void run_actions(void)
     if (!usb_up) {
         usb_init();
         usb_iodev_init();
+        usb_main_nonirq();
     }
 #endif
 
+#if 0
     printf("Running proxy...\n");
 
     uartproxy_run(NULL);
+#endif
+
+    printf("Waiting for proxy connection... ");
+    for (int i = 0; i < 30 * 100; i++) {
+        mdelay(10);
+        if (i % 100 == 99)
+            printf(".");
+    }
+    printf(" Timed out\n");
 }
 
 void m1n1_main(void)
