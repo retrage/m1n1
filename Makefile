@@ -146,6 +146,7 @@ OBJECTS := \
 	start.o \
 	startup.o \
 	string.o \
+	synopsys_otg.o \
 	tunables.o tunables_static.o \
 	tps6598x.o \
 	uart.o \
