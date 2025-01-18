@@ -7,6 +7,7 @@
 #include "iodev.h"
 #include "malloc.h"
 #include "pmgr.h"
+#include "pongo_usb.h"
 #include "string.h"
 #include "tps6598x.h"
 #include "types.h"
@@ -259,8 +260,9 @@ void usb_init(void)
      */
     if (adt_path_offset(adt, "/arm-io/otgphyctrl") > 0 &&
         adt_path_offset(adt, "/arm-io/usb-complex") > 0) {
-        /* We do not support the custom controller and dwc2 (yet). */
-        return;
+        printf("usb: custom otg controller detected\n");
+        pongo_entry_cached();
+        usbotg_init();
     }
 
     i2c_dev_t *i2c = i2c_init("/arm-io/i2c0");
@@ -302,6 +304,8 @@ void usb_hpm_restore_irqs(bool force)
         printf("usb: i2c init failed.\n");
         return;
     }
+
+    // usbotg_teardown();
 
     for (u32 idx = 0; idx < USB_IODEV_COUNT; ++idx) {
         if (iodev_get_usage(IODEV_USB0 + idx) && !force)
